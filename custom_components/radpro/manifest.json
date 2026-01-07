@@ -1,0 +1,11 @@
+{
+  "domain": "radpro",
+  "name": "RadPro",
+  "version": "1.0.0",
+  "documentation": "https://github.com/Defensor7/radpro-ha",
+  "issue_tracker": "https://github.com/Defensor7/radpro-ha/issues",
+  "requirements": ["pyserial==3.5"],
+  "codeowners": ["@Defensor7"],
+  "iot_class": "local_polling",
+  "config_flow": true
+}
