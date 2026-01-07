@@ -36,10 +36,16 @@ jobs:
           fi
           echo "✅ Version match: $TAG_VERSION"
 
+      - name: Create component archive
+        run: |
+          cd custom_components
+          zip -r ../radpro.zip radpro/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: radpro.zip
           body: |
             ## Installation
 
@@ -52,13 +58,3 @@ jobs:
             1. Download `radpro.zip` from assets below
             2. Extract to `config/custom_components/radpro/`
             3. Restart Home Assistant
-
-      - name: Create component archive
-        run: |
-          cd custom_components
-          zip -r ../radpro.zip radpro/
-
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: radpro.zip
