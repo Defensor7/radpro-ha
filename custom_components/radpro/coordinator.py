@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -11,9 +10,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .radpro_io import RadProIO, RadProIOError
 
 _LOGGER = logging.getLogger(__name__)
-
-# Averaging window for stable radiation readings (seconds)
-AVERAGING_WINDOW_S = 5
 
 
 @dataclass
@@ -53,9 +49,10 @@ class DeviceInfo:
 class RadProCoordinator(DataUpdateCoordinator[dict]):
     """
     Polls device using RadPro protocol:
-    - tubePulseCount -> compute CPS/CPM
-    - tubeSensitivity -> compute uSv/h from CPM
-    Mirrors radpro-tool stream_datalog calculations.
+    - tubeRate -> CPM (averaged by device)
+    - tubePulseCount -> lifetime pulse counter
+    - tubeSensitivity -> compute µSv/h from CPM
+    Uses device's built-in averaging for stable readings.
     """
 
     def __init__(
@@ -75,12 +72,7 @@ class RadProCoordinator(DataUpdateCoordinator[dict]):
         self.io = io
         self.device_info: DeviceInfo = DeviceInfo()
 
-        self._prev_pulsecount: int | None = None
-        self._prev_ts: float | None = None
-        self._sensitivity: float | None = None  # CPM per uSv/h (RadPro: uSvH = cpm / sensitivity)
-
-        # Sliding window for averaging: deque of (timestamp, delta_pulses, delta_time)
-        self._samples: deque[tuple[float, int, float]] = deque()
+        self._sensitivity: float | None = None  # CPM per µSv/h
 
         # Intervals for periodic refresh (in update cycles)
         self._sensitivity_interval = max(1, sensitivity_interval_s // max(1, interval_s))
@@ -150,60 +142,41 @@ class RadProCoordinator(DataUpdateCoordinator[dict]):
             if self._update_counter % self._deviceinfo_interval == 0:
                 await self._read_device_info()
 
-            # Read pulse count
+            data: dict = {}
+
+            # Read tubeRate (CPM, already averaged by device)
+            rate_s = await self.hass.async_add_executor_job(self.io.get, "tubeRate")
+            if rate_s:
+                try:
+                    cpm = float(rate_s)
+                    cps = cpm / 60.0
+                    data["cps"] = round(cps, 3)
+                    data["cpm"] = round(cpm, 1)
+
+                    # µSv/h = CPM / sensitivity
+                    if self._sensitivity and self._sensitivity > 0:
+                        usvh = cpm / self._sensitivity
+                        data["usvh"] = round(usvh, 3)
+
+                    _LOGGER.debug(
+                        "tubeRate: CPM=%.1f, CPS=%.3f, µSv/h=%s (sensitivity=%.1f)",
+                        cpm, cps, data.get("usvh", "N/A"),
+                        self._sensitivity or 0
+                    )
+                except ValueError:
+                    _LOGGER.warning("Invalid tubeRate: %s", rate_s)
+
+            # Read pulse count (lifetime counter)
             pc_s = await self.hass.async_add_executor_job(self.io.get, "tubePulseCount")
-            if not pc_s:
-                raise UpdateFailed("No response for tubePulseCount")
+            if pc_s:
+                try:
+                    data["pulse_count"] = int(pc_s)
+                    _LOGGER.debug("tubePulseCount: %s", pc_s)
+                except ValueError:
+                    _LOGGER.warning("Invalid tubePulseCount: %s", pc_s)
 
-            try:
-                pulsecount = int(pc_s)
-            except ValueError as e:
-                raise UpdateFailed(f"Invalid tubePulseCount: {pc_s}") from e
-
-            _LOGGER.debug("Raw tubePulseCount: %s", pc_s)
-
-            now = self.hass.loop.time()
-
-            data: dict = {
-                "pulse_count": pulsecount,
-            }
-
-            # If we have previous sample -> add to sliding window
-            if self._prev_pulsecount is not None and self._prev_ts is not None:
-                dt = now - self._prev_ts
-                dp = pulsecount - self._prev_pulsecount
-                if dt > 0 and dp >= 0:
-                    # Add sample to sliding window
-                    self._samples.append((now, dp, dt))
-
-                    # Remove old samples outside the averaging window
-                    cutoff = now - AVERAGING_WINDOW_S
-                    while self._samples and self._samples[0][0] < cutoff:
-                        self._samples.popleft()
-
-                    # Calculate averaged values over the window
-                    total_pulses = sum(s[1] for s in self._samples)
-                    total_time = sum(s[2] for s in self._samples)
-
-                    if total_time > 0:
-                        cps = total_pulses / total_time
-                        cpm = total_pulses * 60.0 / total_time
-                        data["cps"] = round(cps, 3)
-                        data["cpm"] = round(cpm, 1)
-
-                        # uSv/h = cpm / sensitivity (see radpro-tool)
-                        if self._sensitivity and self._sensitivity > 0:
-                            data["usvh"] = round(cpm / self._sensitivity, 3)
-
-                        _LOGGER.debug(
-                            "Calculated (avg %.0fs): dp=%d, dt=%.3fs, total_pulses=%d, "
-                            "total_time=%.1fs, CPS=%.3f, CPM=%.1f, µSv/h=%s",
-                            AVERAGING_WINDOW_S, dp, dt, total_pulses, total_time,
-                            cps, cpm, data.get("usvh", "N/A")
-                        )
-
-            self._prev_pulsecount = pulsecount
-            self._prev_ts = now
+            if not data:
+                raise UpdateFailed("No valid data received from device")
 
             return data
 
