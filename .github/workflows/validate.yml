@@ -20,6 +20,8 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          # Skip brands check - not required for custom repositories
+          ignore: brands
 
   validate-hassfest:
     name: Hassfest Validation
