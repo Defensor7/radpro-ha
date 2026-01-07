@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate HACS
+        uses: hacs/action@main
+        with:
+          category: integration
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Verify manifest version
+        run: |
+          MANIFEST_VERSION=$(jq -r '.version' custom_components/radpro/manifest.json)
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Version mismatch: manifest.json ($MANIFEST_VERSION) != tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "✅ Version match: $TAG_VERSION"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            ### HACS (Recommended)
+            1. Add this repository as a custom repository in HACS
+            2. Search for "RadPro" and install
+            3. Restart Home Assistant
+
+            ### Manual
+            1. Download `radpro.zip` from assets below
+            2. Extract to `config/custom_components/radpro/`
+            3. Restart Home Assistant
+
+      - name: Create component archive
+        run: |
+          cd custom_components
+          zip -r ../radpro.zip radpro/
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: radpro.zip
