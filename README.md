@@ -1,7 +1,7 @@
 # RadPro Home Assistant Integration
 
 <p align="center">
-  <img src="icon.png" alt="RadPro Icon" width="128">
+  <img src="assets/logo_text.png" alt="RadPro HA" width="400">
 </p>
 
 <p align="center">
