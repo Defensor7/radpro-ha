@@ -36,39 +36,61 @@ class RadProIO:
             self.serial.close()
         self.serial = None
 
-    def query(self, request: str) -> str | None:
+    def query(self, request: str, retries: int = 1) -> str | None:
         """
         Returns value (string) or None.
-        Mirrors radpro-tool.py behavior:
+        - flush any stale data from previous (possibly timed-out) commands
         - send request + '\n'
+        - small pause so the device can begin its reply
         - read one line
         - if startswith 'OK' return response[3:]
+        Retries once on transport errors or empty/garbled responses to avoid
+        a single stray reply taking down all sensors with UpdateFailed.
         """
         if self.serial is None:
             self.open()
 
-        try:
-            assert self.serial is not None
-            _LOGGER.debug("TX: %s", request)
-            self.serial.write(request.encode("ascii") + b"\n")
-            response_bytes = self.serial.readline()
-        except Exception as e:
-            _LOGGER.debug("Serial error: %s", e)
-            self.serial = None
-            raise RadProIOError(str(e)) from e
+        last_err: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                assert self.serial is not None
+                # Drop anything left over from a previously timed-out command,
+                # otherwise readline() below would return that stale line and
+                # we'd associate it with the wrong request ("response shifting").
+                self.serial.reset_input_buffer()
+                _LOGGER.debug("TX: %s", request)
+                self.serial.write(request.encode("ascii") + b"\n")
+                self.serial.flush()
+                # Give the device a moment to start responding before we block on read.
+                time.sleep(0.02)
+                response_bytes = self.serial.readline()
+            except Exception as e:
+                last_err = e
+                _LOGGER.debug("Serial error (attempt %d): %s", attempt + 1, e)
+                # Reopen on the next attempt
+                try:
+                    self.close()
+                except Exception:
+                    pass
+                self.serial = None
+                if attempt < retries:
+                    self.open()
+                continue
 
-        time.sleep(0.05)
+            if not response_bytes:
+                _LOGGER.debug("RX: (no response, attempt %d)", attempt + 1)
+                continue
 
-        if not response_bytes:
-            _LOGGER.debug("RX: (no response)")
-            return None
+            response = response_bytes.decode("ascii", errors="ignore").strip()
+            _LOGGER.debug("RX: %s", response)
 
-        response = response_bytes.decode("ascii", errors="ignore").strip()
-        _LOGGER.debug("RX: %s", response)
+            if response.startswith("OK"):
+                return response[3:].strip()
 
-        if response.startswith("OK"):
-            # In radpro-tool: response[3:]
-            return response[3:].strip()
+            _LOGGER.debug("Unexpected response (attempt %d): %s", attempt + 1, response)
+
+        if last_err is not None:
+            raise RadProIOError(str(last_err)) from last_err
         return None
 
     def get(self, key: str) -> str | None:
